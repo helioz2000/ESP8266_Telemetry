@@ -1,6 +1,6 @@
 #!/bin/bash
 # UDP broadcast for Lap Counter host
-# This script needs to start on boot.
+# This script needs to start on boot (e.g. via SYSTEM D)
 
 # network device
 DEV=eth0
