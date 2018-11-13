@@ -14,6 +14,7 @@
 
 [Unit]
 Description=Lap Counter Broadcast service
+Requires=network.target
 After=network.target
 
 [Service]
