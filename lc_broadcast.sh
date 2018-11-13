@@ -14,6 +14,9 @@ BC_PORT=2000
 #broadcast interval in seconds (must be less than the timneout specified in the client)
 INTERVAL=10
 
+# wait for system to settle down
+sleep 20
+
 #get the broadcast address for the specified ethernet device
 bc_address=`/bin/ip a s dev $DEV | awk '/inet / {print $4}'`
 echo "Broadcasting on $bc_address"
