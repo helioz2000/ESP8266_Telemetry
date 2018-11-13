@@ -1,0 +1,28 @@
+# /etc/systemd/system/lc_broadcast.service
+#
+# 2018 by Erwin Bejsta
+#
+# service to activate Lap Counter broadcast
+# for broadcast configuration see /usr/sbin/lc_broadcast.sh
+#
+#
+# After installing this file execute the following commands:
+# systemctl enable lc_broadcast.service
+# systemctl daemon-reloac
+# systemctl start lc_broadcast.service
+#
+
+[Unit]
+Description=Lap Counter Broadcast service
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/lc_broadcast.sh
+WorkingDirectory=/usr/sbin
+StandardOutput=inherit
+StandardError=inherit
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
