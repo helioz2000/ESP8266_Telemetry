@@ -46,9 +46,30 @@ const long T_HOST_DISCOVERY_TIMEOUT = 30000;    // Timeout for telemetry host di
 const int UDP_RX_BUFFER_SIZE = 256;
 char rxPacket[UDP_RX_BUFFER_SIZE];                   // buffer for incoming packets
 char txPacket[256];                   // buffer for outgoing packets
-
 bool bc_listening = false;            // true when listening for broadcast for host discovery
 
+byte flash_byte = 0;
+//bool flash_mem;
+
+#define FLASH_31 0
+#define FLASH_62 1
+#define FLASH_125 2
+#define FLASH_250 3
+#define FLASH_500 4
+#define FLASH_1S 5
+#define FLASH_2S 6
+#define FLASH_4S 7
+
+/*
+ * Interrupt Service Routine
+ * Timer triggered interrrupt
+ */
+void ICACHE_RAM_ATTR onTimerISR(){
+  //if (flash_byte <= 255)
+    flash_byte++;
+  //else
+  //  flash_byte = 1;
+}
 
 void setup() {
   Serial.begin(9600);
@@ -62,15 +83,19 @@ void setup() {
   Serial.print("Connecting to ");
   Serial.println(ssid); 
   WiFi.begin(ssid, password);
+  digitalWrite(LED_BUILTIN, LED_ON);
+  
+  // configure time interrupt
+  timer1_attachInterrupt(onTimerISR);
+  timer1_enable(TIM_DIV16, TIM_EDGE, TIM_LOOP);   // 5 ticks / us
+  timer1_write( 31250 * 5); //31250 us
   
 }
 
 void wait_for_wifi() {
   while (WiFi.status() != WL_CONNECTED) {
-    digitalWrite(LED_BUILTIN, LED_ON);
-    delay(50);
-    digitalWrite(LED_BUILTIN, LED_OFF);
-    delay(250);
+    delay(200);             // do not remove, no delay will crash the ESP8266
+    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_250));
     //Serial.print(".");
   }
   Serial.println("");
@@ -97,7 +122,7 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     wait_for_wifi();
   } else {
-    
+    /*
     if (millis() >= nextflash) {
       nextflash += FLASH_INTERVAL;
       digitalWrite(LED_BUILTIN, LED_ON);
@@ -106,7 +131,7 @@ void loop() {
       if (millis() >= flashoff)
         digitalWrite(LED_BUILTIN, LED_OFF);
     }
-
+    */
     if (millis() >= nextTX) {
       nextTX += TX_INTERVAL;
       send_telemetry();
@@ -118,17 +143,18 @@ void send_telemetry() {
   if (!t_host_found) return;
   if (!Udp.beginPacket(t_host_ip, t_port)) {
     Serial.println("Udp.beginPacket failed");
-    return;
+    goto send_done;
   }
   
   txPacket[0] = 0x31;
   txPacket[1] = 0x32;
   txPacket[2] = 0x33;
   txPacket[3] = 0x34;
-  
+
+  digitalWrite(LED_BUILTIN, LED_ON);
   if (Udp.write(txPacket, 4) != 4) {
     Serial.println("Udp.write failed");
-    return;
+    goto send_done;
   }
   
   if (!Udp.endPacket()) {
@@ -136,7 +162,9 @@ void send_telemetry() {
   } else {
     Serial.print(millis());
     Serial.println(": Udp Packet sent");
-  } 
+  }
+send_done:
+  digitalWrite(LED_BUILTIN, LED_OFF);
 }
 
 /*
@@ -167,9 +195,11 @@ bool discover_telemetry_host(long timeout) {
        // read the packet into packetBufffer
       bytesRead = Udp.read(rxPacket,UDP_RX_BUFFER_SIZE);    
       mylog("UDP receive %d %d\n", packetSize, bytesRead );
-      if (validateTelemetryHost(bytesRead))
+      if (validateTelemetryHost(bytesRead)) {
         return true;
+      }
     }
+    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_1S));
   }
   return false;
 }
