@@ -5,7 +5,7 @@ The ESP8266 module used for this project is a WeMos D1
 
 This project is designed for RC cars lap counting and to provide telemetry data from the cars.
 
-### Telemetry Host
+#### Telemetry Host
 The host sends a UDP broadcast package at a regular time interval (e.g. 10s) to facilitate automatic host address discovery by the client.
 The data sent by the host is a string with the following format: "LC1\t2006\thostname" with \t being a tab character separator.
 - LC1 = Identifier. Future version may use LC2, LC3, etc.
