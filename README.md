@@ -12,6 +12,6 @@ The data sent by the host is a string with the following format: "LC1\t2006\thos
 - 2006 = Port number where the host is listening for telemetry packets
 - hostname = the name of the host, for information only
 
-Broadcast interval
+##### Broadcast interval
 It is suggested to broadcast every 10 seconds so a new station can begine sending telemetry within 10s of coming online.
 
