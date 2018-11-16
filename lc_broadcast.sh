@@ -9,6 +9,8 @@
 DEV=eth0
 # id to broadcast (the client identifies the correct host)
 HOSTID="LC1"
+# hostname
+HOSTNAME=`hostname`
 # broadcast port (the client listens for broadcast packets on this port)
 BC_PORT=2000
 #broadcast interval in seconds (must be less than the timneout specified in the client)
@@ -24,7 +26,7 @@ echo "Broadcasting on $bc_address"
 # broadcast endless loop
 while true
 do
-        echo "LC1" | /bin/nc -ub -w0 $bc_address $BC_PORT
+        echo -e "LC1\t2006\t$HOSTNAME" | /bin/nc -ub -w0 $bc_address $BC_PORT
         echo "Broadcast sent.."
         sleep $INTERVAL
 done
