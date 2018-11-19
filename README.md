@@ -43,7 +43,9 @@ Each Lap Count packet is acknowledged by the host with a UDP packet to the clien
 
 **Packet Type 2:** Telemetry data
 >8    Number of data items. 
+
 >9    Data type, Bit 7 = 4 bytes (high) or 2 bytes (low). 
+
 >y1   data - depends on data type in prev byte, 1, 2 or 4 bytes long. 
 >x2   data type. 
 >y2   data. 
