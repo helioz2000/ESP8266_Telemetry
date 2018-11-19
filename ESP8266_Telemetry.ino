@@ -38,6 +38,14 @@ ADC_MODE(ADC_VCC);    // switch analog input to read VCC
 // Fill in network details below:
 const char* ssid     = "";
 const char* password = "";
+// enable line below to update stored WiFi settings
+//#define UPDATE_WIFI
+
+
+typedef union {
+  long l_value;
+  uint8_t bytes[4];
+} LONGUNION_t;
 
 const bool LED_ON = false;
 const bool LED_OFF = true;
@@ -59,14 +67,22 @@ const int T_HOST_NAME_MAX_LEN = 30;
 char t_host_name[T_HOST_NAME_MAX_LEN];    // storage for host name
 
 const int UDP_RX_BUFFER_SIZE = 256;
-char rxPacket[UDP_RX_BUFFER_SIZE];                   // buffer for incoming packets
+char rxPacket[UDP_RX_BUFFER_SIZE];    // buffer for incoming packets
+char lcPacket[16];                    // buffer for lap count packet
 char txPacket[256];                   // buffer for outgoing packets
 bool bc_listening = false;            // true when listening for broadcast for host discovery
+byte udp_sequence = 0;
+const byte PACKET_TYPE_KEEP_ALIVE = 0;
+const byte PACKET_TYPE_LAP_COUNT = 1;
+const byte PACKET_TYPE_TELEMETRY = 2;
 
-volatile bool lap_count_trigger = false;
+
+volatile unsigned long lap_count_millis = 0;
 bool lap_count_signal_shadow = false;
 long lap_count_signal_block_time = 10000;    // ms for lap count sensor blocking (possible multiple signals)
 long lap_count_signal_block_timeout;
+
+uint8_t macAddr[6];                         // MAC address of this device
 
 volatile byte flash_byte = 0;
 
@@ -88,7 +104,8 @@ void ICACHE_RAM_ATTR onTimerISR() {
 }
 
 void ICACHE_RAM_ATTR onLapCountISR() {
-  lap_count_trigger = true;
+  //lap_count_trigger = true;
+  lap_count_millis = millis();
 }
 
 void setup() {
@@ -103,8 +120,16 @@ void setup() {
   Serial.println();
   Serial.print("Connecting to ");
   Serial.println(ssid); 
+#ifdef UPDATE_WIFI
   WiFi.begin(ssid, password);
+#else
+  WiFi.begin();
+#endif
+  
   digitalWrite(LED_BUILTIN, LED_ON);
+
+  // get MAC address to be used as ID
+  WiFi.macAddress(macAddr);
   
   // configure time interrupt
   timer1_attachInterrupt(onTimerISR);
@@ -123,7 +148,7 @@ void wait_for_wifi() {
     //Serial.print(".");
   }
   Serial.println("");
-  Serial.println("WiFi connected");  
+  mylog("WiFi Connected, [%02X:%02X:%02X:%02X:%02X:%02X]\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
 
 #ifdef SHOWINFO_WIFIDIAG
   Serial.println("");
@@ -153,20 +178,58 @@ void loop() {
     send_telemetry();
   }
 
-  if (lap_count_trigger) {
+  if (lap_count_millis != 0) {
     if (!lap_count_signal_shadow) {
       mylog("Lap Count Sensor Int\n");
       lap_count_signal_shadow = true;
       lap_count_signal_block_timeout = millis() + lap_count_signal_block_time;
+      send_lapcount_packet();
     } else {
       if(millis() >= lap_count_signal_block_timeout) {
         //lap_count_signal_block_timeout = 0;
-        lap_count_trigger = false;
+        lap_count_millis = 0;
         lap_count_signal_shadow = false;
       }
     }   
   }
 }
+
+bool send_lapcount_packet() {
+  bool retVal = false;
+  int i;
+  LONGUNION_t elapsed_time;
+  
+  if (!t_host_found) return retVal;
+  if (!Udp.beginPacket(t_host_ip, t_port)) {
+    Serial.println("Udp.beginPacket failed");
+    goto send_done;
+  }
+  memcpy(lcPacket, macAddr, sizeof(macAddr) );
+  lcPacket[6] = udp_sequence++;
+  lcPacket[7] = PACKET_TYPE_LAP_COUNT;
+
+  lap_count_millis -= 255;
+  
+  elapsed_time.l_value = millis() - lap_count_millis;
+  for (i = 0; i < 4; i++) {
+    lcPacket[8+i] = elapsed_time.bytes[i];
+  }
+  if (Udp.write(lcPacket, 12) != 12) {
+    Serial.println("Udp.write failed");
+    goto send_done;
+  } else {
+    retVal = true;
+    mylog("UDP sent: ");
+    for (i=0; i<12; i++) {
+      mylog("%02X,", lcPacket[i]);
+    }
+    mylog(" <%d> <%d> <%d>\n", millis(), lap_count_millis, elapsed_time.l_value);
+  }
+  Udp.endPacket();
+send_done:
+  return retVal;  
+}
+
 /*
  * send telemetry data to host
  */

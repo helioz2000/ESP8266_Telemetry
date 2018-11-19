@@ -24,9 +24,11 @@ Client startup sequence:
 - Continually send telemetry packets to host
 
 ##### Telemetry packet structure
->0-5 client ID (MAC address).
->6   packet type.
->7   packet sequence number.
+>0-5 client ID (MAC address)
+
+>6   packet sequence number
+
+>7   packet type
 
 Data from byte 8 onwards depends on the packet type:
 
