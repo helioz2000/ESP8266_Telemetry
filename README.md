@@ -30,10 +30,10 @@ Client startup sequence:
 
 Data from byte 8 onwards depends on the packet type:
 
-*Packet Type 0:* Keep alive packet.
-Has no extra content, just type and sequence number.
+**Packet Type 0:** Keep alive.
+Has no extra content, just type and sequence number. Sent at regular intervals. Not required when telemtry data is sent.
 
-*Packet Type 1:* Lap Count event.
+**Packet Type 1:** Lap Count event.
 >8-11 time in ms since lap count signal has occured (long format).
 
 This packet receives an acknowledgement from the telemetry host and is retransmitted if the host doesn't reply within 3 seconds
@@ -41,7 +41,7 @@ Each Lap Count packet is acknowledged by the host with a UDP packet to the clien
 >0 - ACK (0x06) or NAK (0x15).
 >1 - sequence number.
 
-*Packet Type 2:* Telemetry data
+**Packet Type 2:** Telemetry data
 >8    Number of data items
 >9    Data type, Bit 7 = 4 bytes (high) or 2 bytes (low)
 >y1   data - depends on data type in prev byte, 1, 2 or 4 bytes long
