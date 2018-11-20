@@ -10,6 +10,13 @@
  *  When the lap count sensor input goes low a UDP packet is sent to the telemetry host
  *  with the time since the lapcount has occured. This packet will be re-transmitted
  *  until the host acknowledges the packet.
+ *  
+ *  Changing WiFi SSID and passphrase:
+ *  At any time druing startup or operation the user can send "+++" to enter
+ *  Network Discovery mode. After selection of a network the user is asked to enter
+ *  the network passphrase.
+ *  Once connected, the SSID and passphrase are stored in the module and used 
+ *  durign subsequent WiFi activities.
  *   
  *  Pins:
  *  D0 = 16   // not working
@@ -25,6 +32,8 @@
 
 const byte LAP_COUNT_SENSOR_PIN = 0;
 
+#define UI Serial         // user interface
+
 #include <ESP8266WiFi.h>
 #include <WifiUdp.h>
 
@@ -36,11 +45,9 @@ const byte LAP_COUNT_SENSOR_PIN = 0;
 ADC_MODE(ADC_VCC);    // switch analog input to read VCC
 
 // Fill in network details below:
-const char* ssid     = "";
-const char* password = "";
-// enable line below to update stored WiFi settings
-//#define UPDATE_WIFI
-
+char wifi_ssid[32];
+char wifi_passphrase[32];;
+#define WIFI_CONNECT_TIMEOUT 15000    // max connection time for WiFi timeout
 
 typedef union {
   long l_value;
@@ -61,7 +68,7 @@ bool t_host_found = false;
 const int telemetry_default_port = 2006;
 unsigned int t_port = telemetry_default_port;     // Port for data exchange
 const unsigned int bc_port = 2000;    // Broadcast port for telemetry host discovery
-const long T_HOST_DISCOVERY_TIMEOUT = 30000;    // Timeout for telemetry host discovery
+const long T_HOST_DISCOVERY_TIMEOUT = 15000;    // Timeout for telemetry host discovery
 
 const int T_HOST_NAME_MAX_LEN = 30;
 char t_host_name[T_HOST_NAME_MAX_LEN];    // storage for host name
@@ -76,13 +83,14 @@ const byte PACKET_TYPE_KEEP_ALIVE = 0;
 const byte PACKET_TYPE_LAP_COUNT = 1;
 const byte PACKET_TYPE_TELEMETRY = 2;
 
-
 volatile unsigned long lap_count_millis = 0;
 bool lap_count_signal_shadow = false;
 long lap_count_signal_block_time = 10000;    // ms for lap count sensor blocking (possible multiple signals)
 long lap_count_signal_block_timeout;
 
 uint8_t macAddr[6];                         // MAC address of this device
+
+char inputBuffer[32];
 
 volatile byte flash_byte = 0;
 
@@ -109,22 +117,15 @@ void ICACHE_RAM_ATTR onLapCountISR() {
 }
 
 void setup() {
-  Serial.begin(9600);
+  UI.begin(9600);
   delay(10);
 
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(LAP_COUNT_SENSOR_PIN, INPUT_PULLUP);
   
   // We start by connecting to a WiFi network
-  Serial.println();
-  Serial.println();
-  Serial.print("Connecting to ");
-  Serial.println(ssid); 
-#ifdef UPDATE_WIFI
-  WiFi.begin(ssid, password);
-#else
+  mylog("\n\n\nEnter +++ to activate WiFi config mode.\nConnecting to ", WiFi.SSID());
   WiFi.begin();
-#endif
   
   digitalWrite(LED_BUILTIN, LED_ON);
 
@@ -141,27 +142,130 @@ void setup() {
   
 }
 
-void wait_for_wifi() {
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(200);             // do not remove, no delay will crash the ESP8266
-    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_250));
-    //Serial.print(".");
+/*
+ * Scan for use input of +++ to enter WiFi config mode
+ * returns true if the user has entered +++ otherwise false
+ */
+bool scan_user_input() {
+  if (UI.available()) {
+    if (read_line() == 3) {
+      for (int i=0; i<3; i++) {
+        if (inputBuffer[i] != '+') return false;
+      }
+      // drain the input buffer
+      while (UI.available()) {
+        UI.read();
+      }
+      return true;
+    }
   }
-  Serial.println("");
+  return false;
+}
+
+/*
+ * read one line of user input into buffer 
+ * returns the number of characters read into the input buffer
+ */
+int read_line() {
+  int cnt = 0;
+  char c;
+  while (1) {
+    if (UI.available()) {
+      c = UI.read();
+      if (c >= 0x1F) {
+        inputBuffer[cnt++] = c;
+      }
+      if ((c == '\n') || (cnt == sizeof(inputBuffer)-1)) {
+        inputBuffer[cnt] = '\0';
+        return cnt;    
+      }
+    }
+  }
+}
+
+/*
+ * Allow user to change WiFi SSID and password
+ */
+void wifi_select_network() { 
+  byte numSsid;
+  int thisNet;
+  
+startAgain:
+  UI.println("\n** Scanning Nearby Networks **");
+  // scan for nearby networks:
+  numSsid = WiFi.scanNetworks();
+  // print the list of networks seen:
+  mylog("SSID List: [%d]\n", numSsid);
+  // print the network number and name for each network found:
+  for (thisNet = 0; thisNet<numSsid; thisNet++) {
+    mylog("%d) [%ddBm] %s\n", thisNet, WiFi.RSSI(thisNet), WiFi.SSID(thisNet).c_str() );
+  }
+  mylog("Select Network [0-%d] and press Enter: ", numSsid-1);
+  if (read_line() <= 0) {
+    mylog("Error - Nothing selected\n");
+    goto startAgain;
+  }
+  mylog("%s\n", inputBuffer);
+  thisNet = atoi(inputBuffer);
+  if ( (thisNet >= numSsid)  || (thisNet < 0)) {
+    mylog("Error - Invalid selection\n");
+    goto startAgain;
+  }
+  mylog("Please enter pass phrase for %s : ", WiFi.SSID(thisNet).c_str() );
+  if (read_line() < 0) {
+    mylog("Error - A valid passphrase must be entered\n");
+    goto startAgain;
+  }
+  mylog("**passphrase**\n\nConnecting to %s\n", WiFi.SSID(thisNet).c_str());
+  // save ssid and passphrase
+  strcpy(wifi_ssid, WiFi.SSID(thisNet).c_str());
+  strcpy(wifi_passphrase, inputBuffer);
+  
+  //mylog("<%s> <%s>\n", wifi_ssid, wifi_password);
+  WiFi.disconnect(true);                  // this will clear the previous credentials
+  WiFi.begin(wifi_ssid, wifi_passphrase);
+}
+
+
+void wait_for_wifi() {
+  long wifi_timeout;
+start_again:  
+  wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);             // do not remove, no delay will crash the ESP8266
+    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_250));
+    if (millis() >= wifi_timeout) {
+      mylog("\nWiFi timeout trying to connect to %s\n", WiFi.SSID().c_str());
+      wifi_select_network();
+      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+    }
+    if (scan_user_input()) {
+      wifi_select_network();
+      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+    }
+  }
   mylog("WiFi Connected, [%02X:%02X:%02X:%02X:%02X:%02X]\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
 
 #ifdef SHOWINFO_WIFIDIAG
-  Serial.println("");
+  UI.println("");
   WiFi.printDiag(Serial);
 #endif
 
   wifi_info();
   esp_info();
 
-  Serial.print("Waiting for telemetry host broadcast ");
+  UI.print("Waiting for telemetry host broadcast ");
   while (!t_host_found ) {   
-    Serial.print(".");
-    discover_telemetry_host(T_HOST_DISCOVERY_TIMEOUT);   
+    UI.print(".");
+    if (discover_telemetry_host(T_HOST_DISCOVERY_TIMEOUT)) {
+      UI.println(" ");
+    }
+    // allow user to interrupt and select different network
+    if (scan_user_input()) {
+      UI.println(" ");
+      wifi_select_network();
+      goto start_again;
+    }   
   }
   nextTX = millis() + TX_INTERVAL;
 }
@@ -169,6 +273,12 @@ void wait_for_wifi() {
 void loop() {
   // establish WiFi if not connected
   if (WiFi.status() != WL_CONNECTED) {
+    wait_for_wifi();
+  }
+
+  // check for user input
+  if (scan_user_input()) {
+    wifi_select_network();
     wait_for_wifi();
   }
 
@@ -201,7 +311,7 @@ bool send_lapcount_packet() {
   
   if (!t_host_found) return retVal;
   if (!Udp.beginPacket(t_host_ip, t_port)) {
-    Serial.println("Udp.beginPacket failed");
+    UI.println("Udp.beginPacket failed");
     goto send_done;
   }
   memcpy(lcPacket, macAddr, sizeof(macAddr) );
@@ -215,7 +325,7 @@ bool send_lapcount_packet() {
     lcPacket[8+i] = elapsed_time.bytes[i];
   }
   if (Udp.write(lcPacket, 12) != 12) {
-    Serial.println("Udp.write failed");
+    UI.println("Udp.write failed");
     goto send_done;
   } else {
     retVal = true;
@@ -236,7 +346,7 @@ send_done:
 void send_telemetry() {
   if (!t_host_found) return;
   if (!Udp.beginPacket(t_host_ip, t_port)) {
-    Serial.println("Udp.beginPacket failed");
+    UI.println("Udp.beginPacket failed");
     goto send_done;
   }
   
@@ -247,15 +357,15 @@ void send_telemetry() {
 
   digitalWrite(LED_BUILTIN, LED_ON);
   if (Udp.write(txPacket, 4) != 4) {
-    Serial.println("Udp.write failed");
+    UI.println("Udp.write failed");
     goto send_done;
   }
   
   if (!Udp.endPacket()) {
-    Serial.println("Udp.endPacket failed");
+    UI.println("Udp.endPacket failed");
   } else {
-    Serial.print(millis());
-    Serial.println(": Udp Packet sent");
+    UI.print(millis());
+    UI.println(": Udp Packet sent");
   }
 send_done:
   digitalWrite(LED_BUILTIN, LED_OFF);
@@ -293,6 +403,8 @@ bool discover_telemetry_host(long timeout) {
       }
     }
     digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_1S));
+    // Check for user input
+    if (UI.available()) return false;
   }
   return false;
 }
@@ -314,7 +426,7 @@ bool validateTelemetryHost(int bufsize) {
   t_host_ip = Udp.remoteIP();
   t_host_found = true;
   mylog("Telemetry host: ");
-  Serial.println(t_host_ip);
+  UI.println(t_host_ip);
 
   // check packet for more host information
   rxPacket[bufsize] = 0;  // force end of string
@@ -358,7 +470,7 @@ void mylog(const char *sFmt, ...)
   va_start(args, sFmt);  // mandatory call to initilase args 
 
   vsprintf(acTmp, sFmt, args);
-  Serial.print(acTmp);
+  UI.print(acTmp);
   // mandatory tidy up
   va_end(args);
   return;
