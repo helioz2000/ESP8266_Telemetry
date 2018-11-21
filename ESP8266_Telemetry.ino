@@ -32,10 +32,11 @@
 
 const byte LAP_COUNT_SENSOR_PIN = 0;
 
-#define UI Serial         // user interface
-
 #include <ESP8266WiFi.h>
 #include <WifiUdp.h>
+WiFiUDP Udp;
+
+#define UI Serial         // user interface
 
 // Uncomment lines below to show diag info in terminal
 //#define SHOWINFO_WIFIDIAG
@@ -44,9 +45,8 @@ const byte LAP_COUNT_SENSOR_PIN = 0;
 
 ADC_MODE(ADC_VCC);    // switch analog input to read VCC
 
-// Fill in network details below:
-char wifi_ssid[32];
-char wifi_passphrase[32];;
+char wifi_ssid[32];                   // storage for WiFi SSID
+char wifi_passphrase[32];;            // storage for WiFi passphrase
 #define WIFI_CONNECT_TIMEOUT 15000    // max connection time for WiFi timeout
 
 typedef union {
@@ -60,39 +60,39 @@ const bool LED_OFF = true;
 const long TX_INTERVAL = 5000;        // telemetry TX
 long nextTX;
 
-WiFiUDP Udp;
-IPAddress t_host_ip = (127,0,0,1);
-const char t_host_id[] = {'L', 'C', '1'};
-const int T_HOST_ID_LEN = 3;
-bool t_host_found = false;
-const int telemetry_default_port = 2006;
-unsigned int t_port = telemetry_default_port;     // Port for data exchange
-const unsigned int bc_port = 2000;    // Broadcast port for telemetry host discovery
+IPAddress t_host_ip = (127,0,0,1);              // IP of telemetry host, set by host discovery 
+const char t_host_id[] = {'L', 'C', '1'};       // ID for telemetry host (used host discovery)
+const int T_HOST_ID_LEN = 3;                    // length of host id
+bool t_host_found = false;                      // Telemetry host has been found
+const int telemetry_default_port = 2006;        // May be overridden by telemetry host discovery
+unsigned int t_port = telemetry_default_port;   // Port for data exchange
+const unsigned int bc_port = 2000;              // Broadcast port for telemetry host discovery
 const long T_HOST_DISCOVERY_TIMEOUT = 15000;    // Timeout for telemetry host discovery
 
 const int T_HOST_NAME_MAX_LEN = 30;
 char t_host_name[T_HOST_NAME_MAX_LEN];    // storage for host name
 
+int rxPacketSize;                       // bytes in received UDP packet
 const int UDP_RX_BUFFER_SIZE = 256;
-char rxPacket[UDP_RX_BUFFER_SIZE];    // buffer for incoming packets
-char lcPacket[16];                    // buffer for lap count packet
-char txPacket[256];                   // buffer for outgoing packets
-bool bc_listening = false;            // true when listening for broadcast for host discovery
-byte udp_sequence = 0;
-const byte PACKET_TYPE_KEEP_ALIVE = 0;
-const byte PACKET_TYPE_LAP_COUNT = 1;
-const byte PACKET_TYPE_TELEMETRY = 2;
+char rxPacket[UDP_RX_BUFFER_SIZE];      // buffer for incoming packets
+char lcPacket[16];                      // buffer for lap count packet
+char txPacket[256];                     // buffer for outgoing packets
+bool t_listening = false;               // true when listening for telemetry host UDP packets
+byte udp_sequence = 0;                  // sequence byte for UDP packets
+const byte PACKET_TYPE_KEEP_ALIVE = 0;  // packet types 
+const byte PACKET_TYPE_LAP_COUNT = 1;   // being sent 
+const byte PACKET_TYPE_TELEMETRY = 2;   // to the telemetry host
 
-volatile unsigned long lap_count_millis = 0;
+volatile unsigned long lap_count_millis = 0;  // set to curent millis reading on lap counter interrupt, reset to zero when processed 
 bool lap_count_signal_shadow = false;
-long lap_count_signal_block_time = 10000;    // ms for lap count sensor blocking (possible multiple signals)
+long lap_count_signal_block_time = 10000;     // ms for lap count sensor blocking (possible multiple signals)
 long lap_count_signal_block_timeout;
 
-uint8_t macAddr[6];                         // MAC address of this device
+uint8_t macAddr[6];                       // MAC address of this device
 
-char inputBuffer[32];
+char inputBuffer[32];                     // used for serial port input from user
 
-volatile byte flash_byte = 0;
+volatile byte flash_byte = 0;             // used by ISR to provide pulsing bits
 
 #define FLASH_31 0
 #define FLASH_62 1
@@ -103,6 +103,10 @@ volatile byte flash_byte = 0;
 #define FLASH_2S 6
 #define FLASH_4S 7
 
+// ********************************************************************************
+//    Interrupt routines
+// ********************************************************************************
+
 /*
  * Interrupt Service Routine
  * Timer triggered interrrupt
@@ -111,10 +115,17 @@ void ICACHE_RAM_ATTR onTimerISR() {
   flash_byte++;
 }
 
+/*
+ * Interrupt Service Routine
+ * triggered by a signal on lap counter digital input
+ */
 void ICACHE_RAM_ATTR onLapCountISR() {
-  //lap_count_trigger = true;
   lap_count_millis = millis();
 }
+
+// ********************************************************************************
+//    Setup and Loop functions
+// ********************************************************************************
 
 void setup() {
   UI.begin(9600);
@@ -124,7 +135,7 @@ void setup() {
   pinMode(LAP_COUNT_SENSOR_PIN, INPUT_PULLUP);
   
   // We start by connecting to a WiFi network
-  mylog("\n\n\nEnter +++ to activate WiFi config mode.\nConnecting to ", WiFi.SSID());
+  mylog("\n\n\nEnter +++ to activate WiFi config mode.\nConnecting to ", WiFi.SSID().c_str());
   WiFi.begin();
   
   digitalWrite(LED_BUILTIN, LED_ON);
@@ -140,134 +151,6 @@ void setup() {
   // configure lap counter input interrupt
   attachInterrupt(digitalPinToInterrupt(LAP_COUNT_SENSOR_PIN), onLapCountISR, FALLING);
   
-}
-
-/*
- * Scan for use input of +++ to enter WiFi config mode
- * returns true if the user has entered +++ otherwise false
- */
-bool scan_user_input() {
-  if (UI.available()) {
-    if (read_line() == 3) {
-      for (int i=0; i<3; i++) {
-        if (inputBuffer[i] != '+') return false;
-      }
-      // drain the input buffer
-      while (UI.available()) {
-        UI.read();
-      }
-      return true;
-    }
-  }
-  return false;
-}
-
-/*
- * read one line of user input into buffer 
- * returns the number of characters read into the input buffer
- */
-int read_line() {
-  int cnt = 0;
-  char c;
-  while (1) {
-    if (UI.available()) {
-      c = UI.read();
-      if (c >= 0x1F) {
-        inputBuffer[cnt++] = c;
-      }
-      if ((c == '\n') || (cnt == sizeof(inputBuffer)-1)) {
-        inputBuffer[cnt] = '\0';
-        return cnt;    
-      }
-    }
-  }
-}
-
-/*
- * Allow user to change WiFi SSID and password
- */
-void wifi_select_network() { 
-  byte numSsid;
-  int thisNet;
-  
-startAgain:
-  UI.println("\n** Scanning Nearby Networks **");
-  // scan for nearby networks:
-  numSsid = WiFi.scanNetworks();
-  // print the list of networks seen:
-  mylog("SSID List: [%d]\n", numSsid);
-  // print the network number and name for each network found:
-  for (thisNet = 0; thisNet<numSsid; thisNet++) {
-    mylog("%d) [%ddBm] %s\n", thisNet, WiFi.RSSI(thisNet), WiFi.SSID(thisNet).c_str() );
-  }
-  mylog("Select Network [0-%d] and press Enter: ", numSsid-1);
-  if (read_line() <= 0) {
-    mylog("Error - Nothing selected\n");
-    goto startAgain;
-  }
-  mylog("%s\n", inputBuffer);
-  thisNet = atoi(inputBuffer);
-  if ( (thisNet >= numSsid)  || (thisNet < 0)) {
-    mylog("Error - Invalid selection\n");
-    goto startAgain;
-  }
-  mylog("Please enter pass phrase for %s : ", WiFi.SSID(thisNet).c_str() );
-  if (read_line() < 0) {
-    mylog("Error - A valid passphrase must be entered\n");
-    goto startAgain;
-  }
-  mylog("**passphrase**\n\nConnecting to %s\n", WiFi.SSID(thisNet).c_str());
-  // save ssid and passphrase
-  strcpy(wifi_ssid, WiFi.SSID(thisNet).c_str());
-  strcpy(wifi_passphrase, inputBuffer);
-  
-  //mylog("<%s> <%s>\n", wifi_ssid, wifi_password);
-  WiFi.disconnect(true);                  // this will clear the previous credentials
-  WiFi.begin(wifi_ssid, wifi_passphrase);
-}
-
-
-void wait_for_wifi() {
-  long wifi_timeout;
-start_again:  
-  wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(250);             // do not remove, no delay will crash the ESP8266
-    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_250));
-    if (millis() >= wifi_timeout) {
-      mylog("\nWiFi timeout trying to connect to %s\n", WiFi.SSID().c_str());
-      wifi_select_network();
-      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
-    }
-    if (scan_user_input()) {
-      wifi_select_network();
-      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
-    }
-  }
-  mylog("WiFi Connected, [%02X:%02X:%02X:%02X:%02X:%02X]\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
-
-#ifdef SHOWINFO_WIFIDIAG
-  UI.println("");
-  WiFi.printDiag(Serial);
-#endif
-
-  wifi_info();
-  esp_info();
-
-  UI.print("Waiting for telemetry host broadcast ");
-  while (!t_host_found ) {   
-    UI.print(".");
-    if (discover_telemetry_host(T_HOST_DISCOVERY_TIMEOUT)) {
-      UI.println(" ");
-    }
-    // allow user to interrupt and select different network
-    if (scan_user_input()) {
-      UI.println(" ");
-      wifi_select_network();
-      goto start_again;
-    }   
-  }
-  nextTX = millis() + TX_INTERVAL;
 }
 
 void loop() {
@@ -288,6 +171,7 @@ void loop() {
     send_telemetry();
   }
 
+  // process lapcount event
   if (lap_count_millis != 0) {
     if (!lap_count_signal_shadow) {
       mylog("Lap Count Sensor Int\n");
@@ -302,7 +186,33 @@ void loop() {
       }
     }   
   }
+
+  // receive UDP packets from host
+  if (t_listening) {
+    rxPacketSize = Udp.parsePacket();
+    if (rxPacketSize) {
+      process_rx_packet();
+    }
+  }
 }
+
+/*
+ * process received UDP packet
+ */
+void process_rx_packet() {
+  mylog("Received %d bytes\n", rxPacketSize);
+  Udp.read(rxPacket, rxPacketSize);
+  
+  // show UDP packet contents
+  for (int i = 0; i<rxPacketSize; i++) {
+    mylog("[%0X] ", rxPacket[i]);
+  }
+  UI.println();
+}
+
+// ********************************************************************************
+//    Lap Count functions
+// ********************************************************************************
 
 bool send_lapcount_packet() {
   bool retVal = false;
@@ -340,23 +250,28 @@ send_done:
   return retVal;  
 }
 
+// ********************************************************************************
+//    Telemetry functions
+// ********************************************************************************
+
 /*
  * send telemetry data to host
  */
 void send_telemetry() {
+  int txPacketSize = 0;
   if (!t_host_found) return;
   if (!Udp.beginPacket(t_host_ip, t_port)) {
     UI.println("Udp.beginPacket failed");
     goto send_done;
   }
-  
-  txPacket[0] = 0x31;
-  txPacket[1] = 0x32;
-  txPacket[2] = 0x33;
-  txPacket[3] = 0x34;
 
+  memcpy(txPacket, macAddr, sizeof(macAddr) );
+  txPacket[6] = udp_sequence++;
+  txPacket[7] = PACKET_TYPE_TELEMETRY;
+  txPacketSize = 8;
+  
   digitalWrite(LED_BUILTIN, LED_ON);
-  if (Udp.write(txPacket, 4) != 4) {
+  if (Udp.write(txPacket, txPacketSize) != txPacketSize) {
     UI.println("Udp.write failed");
     goto send_done;
   }
@@ -364,11 +279,27 @@ void send_telemetry() {
   if (!Udp.endPacket()) {
     UI.println("Udp.endPacket failed");
   } else {
-    UI.print(millis());
-    UI.println(": Udp Packet sent");
+    mylog("%d: Telemerty Packet %d sent\n", millis(), udp_sequence-1);
   }
 send_done:
   digitalWrite(LED_BUILTIN, LED_OFF);
+}
+
+// ********************************************************************************
+//    Telemetry Host functions
+// ********************************************************************************
+/*
+ * setup listener on telemerty port for replys from telemetry host.
+ * returns true on success
+ */
+bool setup_t_port_listening () {
+  if (Udp.begin(t_port) != 1) {
+    mylog("!! ERROR: unable to listen on UPD port %d\n",t_port);
+    return false;
+  }
+  t_listening = true;
+  mylog("Listening on local UPD port %d\n",t_port);
+  return true;
 }
 
 /*
@@ -386,7 +317,7 @@ bool discover_telemetry_host(long timeout) {
   if (Udp.begin(bc_port) != 1) {
     return false;
   }
-  bc_listening = true;
+  
   
   long timeout_value = millis() + timeout;
   int packetSize;
@@ -399,11 +330,14 @@ bool discover_telemetry_host(long timeout) {
        // read the packet into packetBufffer
       bytesRead = Udp.read(rxPacket,UDP_RX_BUFFER_SIZE);    
       if (validateTelemetryHost(bytesRead)) {
+        Udp.flush();
+        Udp.stop();
+        setup_t_port_listening();
         return true;
       }
     }
     digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_1S));
-    // Check for user input
+    // Check for user input whci indicates the user wants to change WiFi network
     if (UI.available()) return false;
   }
   return false;
@@ -462,7 +396,151 @@ bool validateTelemetryHost(int bufsize) {
 }
 
 
-// print debug output on console interface
+// ********************************************************************************
+//    WiFi functions
+// ********************************************************************************
+
+/*
+ * Allow user to change WiFi SSID and password
+ */
+void wifi_select_network() { 
+  byte numSsid;
+  int thisNet;
+  
+startAgain:
+  UI.println("\n** Scanning Nearby Networks **");
+  // scan for nearby networks:
+  numSsid = WiFi.scanNetworks();
+  // print the list of networks seen:
+  mylog("SSID List: [%d]\n", numSsid);
+  // print the network number and name for each network found:
+  for (thisNet = 0; thisNet<numSsid; thisNet++) {
+    mylog("%d) [%ddBm] %s\n", thisNet, WiFi.RSSI(thisNet), WiFi.SSID(thisNet).c_str() );
+  }
+  mylog("Select Network [0-%d] and press Enter: ", numSsid-1);
+  if (read_line() <= 0) {
+    mylog("Error - Nothing selected\n");
+    goto startAgain;
+  }
+  mylog("%s\n", inputBuffer);
+  thisNet = atoi(inputBuffer);
+  if ( (thisNet >= numSsid)  || (thisNet < 0)) {
+    mylog("Error - Invalid selection\n");
+    goto startAgain;
+  }
+  mylog("Please enter pass phrase for %s : ", WiFi.SSID(thisNet).c_str() );
+  if (read_line() < 0) {
+    mylog("Error - A valid passphrase must be entered\n");
+    goto startAgain;
+  }
+  mylog("**passphrase**\n\nConnecting to %s\n", WiFi.SSID(thisNet).c_str());
+  // save ssid and passphrase
+  strcpy(wifi_ssid, WiFi.SSID(thisNet).c_str());
+  strcpy(wifi_passphrase, inputBuffer);
+  
+  // connect usign new credentials
+  WiFi.disconnect(true);                  // this will clear the previous credentials
+  WiFi.begin(wifi_ssid, wifi_passphrase);
+}
+
+/*
+ * Wait for WiFi to connect
+ * If not connected within timeout period the user will be prompted to select a new WiFi network
+ * Once the WiFi is conneced we wait for a broadcast packet from the telemetry host 
+ */
+void wait_for_wifi() {
+  long wifi_timeout;
+start_again:  
+  wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(250);             // do not remove, no delay will crash the ESP8266
+    digitalWrite(LED_BUILTIN, bitRead(flash_byte, FLASH_250));
+    if (millis() >= wifi_timeout) {
+      mylog("\nWiFi timeout trying to connect to %s\n", WiFi.SSID().c_str());
+      wifi_select_network();
+      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+    }
+    if (scan_user_input()) {
+      wifi_select_network();
+      wifi_timeout = millis() + WIFI_CONNECT_TIMEOUT;
+    }
+  }
+  //mylog("WiFi Connected, [%02X:%02X:%02X:%02X:%02X:%02X]\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
+
+#ifdef SHOWINFO_WIFIDIAG
+  UI.println("");
+  WiFi.printDiag(Serial);
+#endif
+
+  show_wifi_info();
+  esp_info();
+
+  UI.print("Waiting for telemetry host broadcast ");
+  while (!t_host_found ) {   
+    UI.print(".");
+    if (discover_telemetry_host(T_HOST_DISCOVERY_TIMEOUT)) {
+      UI.println(" ");
+    }
+    // allow user to interrupt and select different network
+    if (scan_user_input()) {
+      UI.println(" ");
+      wifi_select_network();
+      goto start_again;
+    }   
+  }
+  nextTX = millis() + TX_INTERVAL;
+}
+
+
+// ********************************************************************************
+//    Utility functions
+// ********************************************************************************
+
+/*
+ * Scan for use input of +++ to enter WiFi config mode
+ * returns true if the user has entered +++ otherwise false
+ */
+bool scan_user_input() {
+  if (UI.available()) {
+    if (read_line() == 3) {
+      for (int i=0; i<3; i++) {
+        if (inputBuffer[i] != '+') return false;
+      }
+      // drain the input buffer
+      while (UI.available()) {
+        UI.read();
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
+/*
+ * read one line of user input into buffer 
+ * returns the number of characters read into the input buffer
+ */
+int read_line() {
+  int cnt = 0;
+  char c;
+  while (1) {
+    if (UI.available()) {
+      c = UI.read();
+      if (c >= 0x1F) {
+        inputBuffer[cnt++] = c;
+      }
+      if ((c == '\n') || (cnt == sizeof(inputBuffer)-1)) {
+        inputBuffer[cnt] = '\0';
+        return cnt;    
+      }
+    }
+  }
+}
+
+
+/* 
+ *  print debug output on console interface
+ */
 void mylog(const char *sFmt, ...)
 {
   char acTmp[128];       // place holder for sprintf output
@@ -476,13 +554,12 @@ void mylog(const char *sFmt, ...)
   return;
 }
 
-void wifi_info() {
-#ifdef SHOWINFO_WIFICONNECTION
+void show_wifi_info() {
   if (WiFi.status() == WL_CONNECTED) {
     mylog("\nWiFi status: Connected\n");
     uint8_t macAddr[6];
     WiFi.macAddress(macAddr);
-    mylog("Connected, mac address: %02x:%02x:%02x:%02x:%02x:%02x\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
+    mylog("MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n", macAddr[0], macAddr[1], macAddr[2], macAddr[3], macAddr[4], macAddr[5]);
     IPAddress ip = WiFi.localIP();
     mylog("IP address: %s\n", ip.toString().c_str() );
     ip = WiFi.subnetMask();
@@ -492,7 +569,7 @@ void wifi_info() {
   } else {
     mylog("\nWiFi status: Not Connected\n");
   }
-#endif
+
 }
 
 void esp_info() {
