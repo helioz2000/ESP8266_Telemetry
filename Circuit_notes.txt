@@ -1,0 +1,28 @@
+
+IR sender:
+
+IR LED's Vishay TSAL6100
+target current: 200mA
+pulsed at 38kHz
+
+Current limit provided by 22R between emitter and negative
+voltage drop across resistor is 4.2V (190mA)
+voltage drop across CE of transistor is 0.8V
+voltage drop across TSAL6100 is 1.25V
+
+Min voltage for 8 LED's in series:
+LEDs: 6 x 1.25 = 7.5V
+7.5V + 0.8V + 4.2V = 12.5V
+
+Transistor power:
+@ 12.5V: 0.8V * 200mA = 160mW
+@ 14V: 2.3V * 200mA = 460mW
+@ 14.8V: 3.1V * 200mA = 620mW (max of BC337 @ 25°C)
+@ 14.45V: 2.75V * 200mA = 550mA (max of BC337 @ 40°C)
+
+
+4 LEDs:
+5V + 0.8V + 4.2V = 10V
+3.1V * 200mA = 620mW (max BC337)
+Test voltage: 13.1V
+
